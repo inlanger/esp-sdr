@@ -1486,6 +1486,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     }
 #else
     const bool dual = false;
+    const uint32_t tx_guard_pairs = 2048u;
 #endif
     uint32_t stride_phase = 0; /* first block of the next unit on the stride grid */
     dc = (spectrum_dc_t){0};
@@ -1592,13 +1593,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
                 LD_C0(esp_cpu_get_cycle_count() - tp);
                 continue;
             }
-            if (written +
-#if CONFIG_IDF_TARGET_ESP32S3
-                tx_guard_pairs
-#else
-                2048u
-#endif
-                < THRESHOLD && *(volatile uint32_t *)&txq_head != txq_tail) {
+            if (written + tx_guard_pairs < THRESHOLD && *(volatile uint32_t *)&txq_head != txq_tail) {
 #if CONFIG_IDF_TARGET_ESP32S3
                 uint32_t tail_before = txq_tail, tq = esp_cpu_get_cycle_count();
                 txq_pump();
