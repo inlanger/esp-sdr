@@ -1017,6 +1017,12 @@ IRAM_ATTR static void c1_encode_step(void) {
 IRAM_ATTR static void c1_emit_frame(void) {
     while (c1enc.pending) c1_encode_step(); /* frame_out holds the previous frame */
     ring_result_t *r = st.res;
+    if (!st.frame_ffts) { /* match frame_close() for empty runtime frames */
+        r->drops++;
+        st.dropped = true;
+        st.frame_units = st.frame_pairs = st.frame_flags = 0;
+        return;
+    }
     spec_header_t h;
     h.magic = SPEC_MAGIC;
     h.frame = r->frames + r->drops;
@@ -1282,7 +1288,8 @@ IRAM_ATTR void s3_core1_main(void) {
             c1.taken = taken;
             c1_encode_step();
         }
-        if (st.frame_units) c1_emit_frame();
+        /* A stride-selected tail without FFTs has no spectrum to flush. */
+        if (st.frame_ffts) c1_emit_frame();
         while (c1enc.pending) c1_encode_step();
         MEMW();
         c1.done = 1;

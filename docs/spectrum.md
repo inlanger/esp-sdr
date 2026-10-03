@@ -66,6 +66,9 @@ SPECEND status detail units pairs elapsed_us late_max work_max_cycles frames dro
 
 Normal stops return status 0. A bank deadline/continuity failure stops capture
 instead of silently presenting broken timing. Empty S3 frames are dropped.
+At the end of an S3 worker capture, a tail containing no selected FFT is not
+emitted and does not count as an output drop; its samples remain in the final
+`pairs` total. Empty runtime frames still count as drops.
 A host that stops reading can lose a partial frame and the end record when
 bounded output timeouts expire. The decoder resynchronizes on CRC-valid frames
 or an end record; if it cannot establish the end boundary, it marks the
