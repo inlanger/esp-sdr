@@ -18,7 +18,7 @@ void spectrum_stats_emit(spectrum_stats_t *s,unsigned n,unsigned fs,uint32_t fft
     if(dt<250000)return;
     uint64_t load=s->busy*1000/(dt*s->cycles_per_us),df=ffts-s->ffts;
     uint64_t coverage=df*n*1000000000ull/(dt*fs);
-    spectrum_stats_frame_t frame={.magic=0x31535053u,.core0=load>1000?1000:load,
+    spectrum_stats_frame_t frame={.magic=STAT_MAGIC,.core0=load>1000?1000:load,
         .coverage=coverage>1000?1000:coverage,.heap_free=s->heap_free,.heap_largest=s->heap_largest,
         .abandoned=abandoned,.drops=drops,.late_max=late>65535?65535:late,
         .queue=queue>1000?1000:queue,.ffts_per_s=df*1000000/dt};

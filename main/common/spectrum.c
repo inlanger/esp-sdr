@@ -21,7 +21,7 @@
 #else
 #define MAX_FFT 2048u
 #endif
-#define HEADER_BYTES 28u
+#define HEADER_BYTES sizeof(spec_header_t)
 #if CONFIG_IDF_TARGET_ESP32C2
 /* Quiescent during RF capture; keep heap/stacks in the other SRAM banks. */
 #define SPEC_STORAGE __attribute__((section(".c2_spectrum"),aligned(16)))
@@ -62,7 +62,6 @@ static unsigned rate_hz(unsigned code) {
 static bool send_text(const char *s) { return burst_serial_send(s, strlen(s)); }
 static void put16(unsigned at, uint16_t v) { frame[at]=v; frame[at+1]=v>>8; }
 static void put32(unsigned at, uint32_t v) { put16(at,v); put16(at+2,v>>16); }
-static void put64(unsigned at, uint64_t v) { put32(at,v); put32(at+4,v>>32); }
 static unsigned reverse(unsigned x, unsigned bits) {
     unsigned r=0; while(bits--) {r=(r<<1)|(x&1); x>>=1;} return r;
 }
@@ -145,9 +144,10 @@ bool spectrum_command(const char *line, unsigned frequency_mhz, spectrum_acquire
             ffts++;pairs+=n;
         }
         if(status) break;
-        memcpy(frame,"SPC1",4);put32(4,frames);put64(8,index);put32(16,n*units);
-        put16(20,units);frame[22]=8|(det?1:0);frame[23]=gain;put16(24,0);
-        frame[26]=log2n;frame[27]=2;
+        spec_header_t header={.magic=SPEC_MAGIC,.frame=frames,.pair_index=index,
+            .pairs=n*units,.ffts=units,.flags=8|(det?1:0),.gain=gain,
+            .drops=0,.nfft_log2=log2n,.db_step=2};
+        memcpy(frame,&header,sizeof(header));
         for(unsigned j=0;j<n;j++) {
             float p=det?powers[j]:powers[j]/units;
             float db=p>1?20*log10f(p):0;

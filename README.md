@@ -29,6 +29,9 @@ currently implements reception only.
 **Parts of the firmware code are AI-generated.**
 While we have a very good understanding of how the IQ sampling functionality works on the ESP32-C61 chip (used in our ESPARGOS One array), making IQ sampling work on the whole range of ESP32 family chips would have been too much work without LLM support.
 
+Our fork: [reusable protocol modules](host/README.md), [S3 R&D tools](tools/s3/README.md),
+and [measured experiment reports](experiments/s3/README.md).
+
 ## Chip support
 
 | Chip | Status | Native USB | UART0 TX / RX | Minimum flash | Special profiles |

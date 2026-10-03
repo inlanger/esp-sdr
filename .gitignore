@@ -33,3 +33,15 @@ Thumbs.db
 
 # CI SDK checkout
 /.esp-idf/
+
+# Local host package products and raw R&D captures
+/host/build/
+/host/*.egg-info/
+/host/dist/
+/local-backups/
+/experiments/s3/**/*.bin
+/experiments/s3/**/*.cs8
+/experiments/s3/**/*.cs16
+/experiments/s3/**/frames.csv
+/experiments/s3/**/records.jsonl
+/experiments/s3/**/serial.jsonl

@@ -3,14 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint16_t core0,core1,coverage,mode;
-    uint32_t heap_free,heap_largest,abandoned,drops;
-    uint16_t late_max,queue;
-    uint32_t ffts_per_s;
-} spectrum_stats_frame_t;
-_Static_assert(sizeof(spectrum_stats_frame_t)==36,"SPS1 layout");
+#include "sdr_protocol.h"
 typedef struct {
     int64_t at;
     uint64_t busy;

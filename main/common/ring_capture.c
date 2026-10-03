@@ -26,6 +26,7 @@
  * for copying one FFT window, and yields during processing.
  */
 #include "ring_capture.h"
+#include "sdr_protocol.h"
 #include "spectrum.h"
 #include "spectrum_stats.h"
 #include "sdkconfig.h"
@@ -276,23 +277,8 @@ RING_HOT static bool host_input(void) {
 
 /* ---- spectrum reduction ------------------------------------------------ */
 
-#define SPEC_MAGIC 0x31435053u /* "SPC1" */
 #define CHUNK 128u              /* elements per accumulation / emission slice */
 #define UNPACK_CHUNK 512u       /* copy RF input before its bank is reused */
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t frame;      /* frame sequence number */
-    uint64_t pair_index; /* stream index of the first pair (gapless clock) */
-    uint32_t pairs;      /* stream pairs this frame spans */
-    uint16_t ffts;       /* FFTs merged into this frame */
-    uint8_t flags;       /* bit0 max-hold, bit1 work abandoned, bit2 frames dropped before */
-    uint8_t gain;        /* bits 20..27 of the frame's first IQ word */
-    uint16_t drops;      /* cumulative dropped frames, saturating */
-    uint8_t nfft_log2;   /* frame carries 1 << nfft_log2 bin codes */
-    uint8_t db_step;     /* bin code = 10*log10(power) * db_step */
-} spec_header_t;
-_Static_assert(sizeof(spec_header_t) == 28, "SPEC header layout");
 
 static int16_t window_q15[RING_SPEC_NFFT_MAX];
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -447,17 +433,6 @@ static struct {
 #if CONFIG_IDF_TARGET_ESP32S3
 
 /* ---- live statistics frame ("SPS1", opt-in) ------------------------------ */
-#define STAT_MAGIC 0x31535053u /* "SPS1" */
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint16_t c0_pm, c1_pm;       /* core load over the period, per mille */
-    uint16_t cov_pm, mode;       /* FFT coverage per mille; bit0 dual, bit1 assist */
-    uint32_t heap_free, heap_largest; /* internal heap before the run, bytes */
-    uint32_t abandoned, drops;   /* run totals */
-    uint16_t late_max, txq_pm;   /* switch lateness (pairs), output queue fill */
-    uint32_t ffts_per_s;
-} spec_stats_t;
-_Static_assert(sizeof(spec_stats_t) == 36, "SPS1 layout");
 static volatile struct { uint32_t c0_busy, c1_busy; } ld; /* busy cycles, own core each */
 static struct {
     bool started;
@@ -485,23 +460,23 @@ IRAM_ATTR static void stats_maybe(bool core1_side) {
     uint32_t c0 = ld.c0_busy, c1 = ld.c1_busy;
     ring_result_t *r = st.res;
     uint32_t df = r->ffts - sx.ffts, dp = sx.pairs_done - sx.pairs;
-    spec_stats_t m;
+    spectrum_stats_frame_t m;
     m.magic = STAT_MAGIC;
     uint32_t v = (c0 - sx.c0) / per_mille;
-    m.c0_pm = (uint16_t)(v > 1000 ? 1000 : v);
+    m.core0 = (uint16_t)(v > 1000 ? 1000 : v);
     v = (c1 - sx.c1) / per_mille;
-    m.c1_pm = (uint16_t)(v > 1000 ? 1000 : v);
+    m.core1 = (uint16_t)(v > 1000 ? 1000 : v);
     v = dp >= 1000u ? (df * spec_n) / (dp / 1000u) : 0;
-    m.cov_pm = (uint16_t)(v > 1000 ? 1000 : v);
+    m.coverage = (uint16_t)(v > 1000 ? 1000 : v);
     m.mode = sx.mode;
     m.heap_free = sx.heap_free;
     m.heap_largest = sx.heap_largest;
     m.abandoned = r->abandoned;
     m.drops = r->drops;
     m.late_max = (uint16_t)(r->late_max > 65535 ? 65535 : r->late_max);
-    m.txq_pm = (uint16_t)(((*(volatile uint32_t *)&txq_head - *(volatile uint32_t *)&txq_tail) * 1000u) / TXQ_SIZE);
+    m.queue = (uint16_t)(((*(volatile uint32_t *)&txq_head - *(volatile uint32_t *)&txq_tail) * 1000u) / TXQ_SIZE);
     m.ffts_per_s = ms ? df * 1000u / ms : 0;
-    uint8_t buf[sizeof(spec_stats_t) + 4];
+    uint8_t buf[sizeof(spectrum_stats_frame_t) + 4];
     const uint8_t *mp = (const uint8_t *)&m;
     for (unsigned i = 0; i < sizeof(m); i++) buf[i] = mp[i];
     uint32_t crc = esp_rom_crc32_le(0, buf, sizeof(m));
@@ -633,21 +608,10 @@ RING_HOT static void unit_done(void) {
  * the output is rounded >> shift, saturated to 4/8/16 bits and packed into
  * 1024-byte frames. The header carries the decimated
  * sample index of the first sample, so the host sees every gap. */
-#define IQS_MAGIC 0x31535149u /* "IQS1" */
-#define IQS_PAYLOAD 1024u
 #define IQS_CHUNK 512u
 /* heap, not BSS: BSS must end below the RF ring (sram_guard.ld) */
 static uint32_t iqs_cost;
 static uint64_t iqs_cyc, iqs_done;
-typedef struct __attribute__((packed)) {
-    uint32_t magic, frame;
-    uint64_t sample_index; /* decimated stream index of the first sample */
-    uint16_t samples;
-    uint8_t bits, flags;   /* flags bit0: gap before this frame, bit1: frame(s) dropped before */
-    uint16_t dec;
-    uint8_t gain, shift;
-} iqs_header_t;
-_Static_assert(sizeof(iqs_header_t) == 24, "IQS header");
 static struct {
     bool pending;
     unsigned bank;
