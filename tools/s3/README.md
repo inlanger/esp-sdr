@@ -52,6 +52,5 @@ file with missing sample indices must not be interpreted as a gapless recording.
 After CRC resynchronization, loss stays in the report. No ordinary commands are
 sent until a valid SPECEND/IQSEND is established; otherwise reconnect.
 
-[S3 experiment reports](../../experiments/s3/README.md) include failed attempts.
-Original local scripts and sealed recordings are retained as historical evidence.
+Experiment journals, reports and recordings stay local and are excluded from Git.
 These commands are the maintained copies for subsequent experiments.
