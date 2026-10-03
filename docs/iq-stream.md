@@ -25,6 +25,12 @@ frames follow, then an `IQSEND` line with the same twelve fields as
 `SPECEND`; its `ffts` field carries the number of input pairs lost to
 abandoned work.
 
+On S3 with the dual-core worker active, `IQSEND`'s `work_max_cycles` field
+reports the largest USB packet-pump time measured in the capture loop, in
+CPU cycles (240 cycles per microsecond). The IQ scheduler starts with a
+2048-pair USB guard, then uses twice the measured packet time plus 128 pairs
+after the first successful write. Spectrum keeps its existing guard.
+
 `FOFS <kHz>` sets a signed PLL offset that is applied from the next tune (also
 on Wi-Fi channel frequencies), giving 1 kHz tuning steps. `FOFS 0` restores
 the default.
@@ -53,8 +59,10 @@ All integers are little-endian:
 | 24+N | 4 | CRC32 (zlib) of header and payload |
 
 The sample index advances by the frame's sample count; any jump is a gap the
-host can measure exactly. Gaps occur only when the host stops reading (the
-output queue overflows, flag bit 1) or when the worker has to abandon a bank.
+host can measure exactly. Gaps occur when the output queue overflows (flag
+bit 1) or when the worker has to abandon a bank. Queue overflow can result
+from stalled host reads or insufficient transport throughput. Frame sequence
+numbers alone do not detect every loss; check sample indices and `IQSEND`.
 
 ## Signal path
 

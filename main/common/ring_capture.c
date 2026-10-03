@@ -1446,7 +1446,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     for (unsigned b = 0; b < RING_BANKS; b++) fill_sentinels(b, 0, RING_PAIRS);
 
 #if CONFIG_IDF_TARGET_ESP32S3
-    uint32_t assist_cost = 0;
+    uint32_t assist_cost = 0, tx_max_cycles = 0, tx_guard_pairs = 2048u;
     if (spec) { /* warm caches/tables; bank 2 holds sentinels only */
         uint32_t assist_start = esp_cpu_get_cycle_count();
         spec_unpack(bank_ptr(2), 0, 0, spec_n);
@@ -1486,6 +1486,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     }
 #else
     const bool dual = false;
+    const uint32_t tx_guard_pairs = 2048u;
 #endif
     uint32_t stride_phase = 0; /* first block of the next unit on the stride grid */
     dc = (spectrum_dc_t){0};
@@ -1551,15 +1552,14 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
             if (!stop_checked && written >= THRESHOLD / 2) {
                 stop_checked = true;
                 if (!stop && duration_us && esp_timer_get_time() - t_start >= duration_us) stop = true;
-                /* Nobody has read a frame for 2 s (host closed or hung): end
-                 * an open-ended SPEC run instead of streaming forever. */
+                /* End an open-ended stream after 2 s without output progress. */
 #if CONFIG_IDF_TARGET_ESP32S3
-                if (dual && txq_tail != tail_seen) { /* core 0 sees the host reading */
+                if ((dual || iq) && txq_tail != tail_seen) { /* core 0 sees the host reading */
                     tail_seen = txq_tail;
                     st.last_ok = esp_timer_get_time();
                 }
 #endif
-                if (!stop && spec && !duration_us && esp_timer_get_time() - st.last_ok > 2000000) {
+                if (!stop && (spec || iq) && !duration_us && esp_timer_get_time() - st.last_ok > 2000000) {
                     stop = true;
                     r->stopped_by_host = true;
                 }
@@ -1593,11 +1593,18 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
                 LD_C0(esp_cpu_get_cycle_count() - tp);
                 continue;
             }
-            if (written + 2048u < THRESHOLD && *(volatile uint32_t *)&txq_head != txq_tail) {
+            if (written + tx_guard_pairs < THRESHOLD && *(volatile uint32_t *)&txq_head != txq_tail) {
 #if CONFIG_IDF_TARGET_ESP32S3
-                uint32_t tq = esp_cpu_get_cycle_count();
+                uint32_t tail_before = txq_tail, tq = esp_cpu_get_cycle_count();
                 txq_pump();
-                ld.c0_busy += esp_cpu_get_cycle_count() - tq;
+                uint32_t dt = esp_cpu_get_cycle_count() - tq;
+                ld.c0_busy += dt;
+                if (dt > tx_max_cycles) tx_max_cycles = dt;
+                /* Keep the conservative guard until USB actually writes. IQ's
+                 * core 0 has no FFT work: reserve twice the measured packet
+                 * time plus 128 pairs, instead of idling for 2048 pairs. */
+                if (iq && dual && txq_tail != tail_before)
+                    tx_guard_pairs = (2u * tx_max_cycles + cpp - 1u) / cpp + 128u;
 #else
                 txq_pump();
 #endif
@@ -1760,7 +1767,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         r->abandoned += c0_lost;
         r->work_max = c1.block_max; /* longest core-1 block (unpack..accumulate) */
         ring_capture_c0_blocks = cl.c0_blocks;
-        if (iq) { iqs_flush(); r->ffts = iqs.lost_pairs; r->work_max = 0; fir_free(); }
+        if (iq) { iqs_flush(); r->ffts = iqs.lost_pairs; r->work_max = tx_max_cycles; fir_free(); }
     } else if (iq) {
         while (iqs_slice(4096u)) txq_pump();
         iqs_flush();
