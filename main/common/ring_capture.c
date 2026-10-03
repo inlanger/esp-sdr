@@ -1446,7 +1446,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     for (unsigned b = 0; b < RING_BANKS; b++) fill_sentinels(b, 0, RING_PAIRS);
 
 #if CONFIG_IDF_TARGET_ESP32S3
-    uint32_t assist_cost = 0;
+    uint32_t assist_cost = 0, tx_max_cycles = 0;
     if (spec) { /* warm caches/tables; bank 2 holds sentinels only */
         uint32_t assist_start = esp_cpu_get_cycle_count();
         spec_unpack(bank_ptr(2), 0, 0, spec_n);
@@ -1597,7 +1597,9 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
 #if CONFIG_IDF_TARGET_ESP32S3
                 uint32_t tq = esp_cpu_get_cycle_count();
                 txq_pump();
-                ld.c0_busy += esp_cpu_get_cycle_count() - tq;
+                uint32_t dt = esp_cpu_get_cycle_count() - tq;
+                ld.c0_busy += dt;
+                if (dt > tx_max_cycles) tx_max_cycles = dt;
 #else
                 txq_pump();
 #endif
@@ -1760,7 +1762,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         r->abandoned += c0_lost;
         r->work_max = c1.block_max; /* longest core-1 block (unpack..accumulate) */
         ring_capture_c0_blocks = cl.c0_blocks;
-        if (iq) { iqs_flush(); r->ffts = iqs.lost_pairs; r->work_max = 0; fir_free(); }
+        if (iq) { iqs_flush(); r->ffts = iqs.lost_pairs; r->work_max = tx_max_cycles; fir_free(); }
     } else if (iq) {
         while (iqs_slice(4096u)) txq_pump();
         iqs_flush();
