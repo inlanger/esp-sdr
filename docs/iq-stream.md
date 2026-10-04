@@ -32,8 +32,9 @@ CPU cycles (240 cycles per microsecond). The IQ scheduler starts with a
 after the first successful write. Spectrum keeps its existing guard.
 
 `FOFS <kHz>` sets a signed PLL offset that is applied from the next tune (also
-on Wi-Fi channel frequencies), giving 1 kHz tuning steps. `FOFS 0` restores
-the default.
+on Wi-Fi channel frequencies). Its nominal receive-LO step is 1 kHz in normal
+mode and 5/6 kHz in the experimental 1842–2209 MHz mode, before PLL quantization.
+`FOFS 0` restores the default; the stream header omits this fine offset.
 
 Mode 2 is meant for a LO tuned fs/4 (4 MHz at 16 MS/s) below the wanted
 centre: the LO leakage and the 1/f hump at 0 Hz IF then fall outside the

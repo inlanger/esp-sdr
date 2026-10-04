@@ -25,6 +25,8 @@ def main():
     parser.add_argument('--bits', type=int, choices=(8, 16), default=8)
     parser.add_argument('--shift', type=int, choices=range(25))
     parser.add_argument('--frequency', type=int, default=2442)
+    parser.add_argument('--experimental-tuning', action='store_true',
+                        help='Allow integer MHz tuning within advertised RANGE; RF reception is not guaranteed')
     parser.add_argument('--bandwidth', type=int, default=13)
     parser.add_argument('--gain', type=int, default=40)
     args = parser.parse_args()

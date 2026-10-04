@@ -2,7 +2,7 @@
 
 These are the measured local S3 scripts, now versioned in the firmware fork.
 Their wire decoders live in the installable [host package](../../host/README.md).
-The control code deliberately still requires S3 burst protocol 6, uses integer
+The control code deliberately still requires S3 burst protocol 6, defaults to integer
 2400–2483 MHz tuning, and checks advertised gain/bandwidth limits. IQS collection
 is restricted to the measured 16 MS/s input, decimation 64/128, IQ8/IQ16 modes.
 The package itself neither selects those settings nor opens serial ports.
@@ -25,6 +25,12 @@ in the example must be checked against that receiver's saved SPECINFO response.
 Save the firmware commit, host commit/package files and environment versions with
 each run. Native USB is required for S3 SPEC/IQS. Opening the observed serial port
 resets this board; commands wait for boot and a matching SYNC nonce.
+
+For extended-frequency experiments, `capture.py` and `capture_iqs.py` accept
+`--experimental-tuning`. This requires `TUNEEXT`, checks the requested integer MHz
+against `RANGE?`, and saves that reply in `controls.json`. Command acceptance does
+not establish PLL lock, RF reception, frequency accuracy or sensitivity; see
+[extended tuning](../../docs/rx-controls.md#rates-and-extended-tuning).
 
 - `capture.py`: identity, 20 separate IQ snapshots, one continuous SPEC run, or
   20 stop/configure/restart cycles. Snapshots are never labeled continuous IQ.

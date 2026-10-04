@@ -106,11 +106,23 @@ class Receiver:
             raise ValueError('Gain outside advertised limits')
         if args.bandwidth != 0 and not (bwlo <= args.bandwidth <= bwhi and (args.bandwidth - bwlo) % bwstep == 0):
             raise ValueError('Bandwidth outside advertised limits')
-        if not 2400 <= args.frequency <= 2483:
+        controls = {}
+        if getattr(args, 'experimental_tuning', False):
+            if 'TUNEEXT' not in self.caps:
+                raise ValueError('Experimental tuning requires advertised TUNEEXT')
+            controls['RANGE?'] = self.command('RANGE?')
+            words = controls['RANGE?'].split()
+            if len(words) != 4 or words[0] != 'RANGE':
+                raise ValueError('Invalid advertised tuning range')
+            low, high, step = map(int, words[1:])
+            if step <= 0 or not (low <= args.frequency <= high and (args.frequency - low) % step == 0):
+                raise ValueError('Frequency outside advertised tuning range')
+        elif not 2400 <= args.frequency <= 2483:
             raise ValueError('This experiment is restricted to integer MHz in the 2.4 GHz band')
         for command in (f'FREQ {args.frequency}', f'BANDWIDTH {args.bandwidth}', f'GAIN MANUAL {args.gain}'):
             self.ok(command)
-        return {q: self.command(q) for q in ('GAIN?', 'LPF?', 'DC?', 'DUAL?')}
+        controls.update({q: self.command(q) for q in ('GAIN?', 'LPF?', 'DC?', 'DUAL?')})
+        return controls
 
     def close(self):
         self.port.close()
@@ -247,6 +259,8 @@ def main():
     parser.add_argument('--port', required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--frequency', type=int)
+    parser.add_argument('--experimental-tuning', action='store_true',
+                        help='Allow integer MHz tuning within advertised RANGE; RF reception is not guaranteed')
     parser.add_argument('--bandwidth', type=int)
     parser.add_argument('--gain', type=int)
     parser.add_argument('--profile', type=int, help='Zero-based SPECINFO profile index; no automatic selection')
