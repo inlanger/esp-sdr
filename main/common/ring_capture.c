@@ -903,6 +903,7 @@ typedef struct {
     uint32_t start; /* first block to transform (stride phase carried across units) */
     uint64_t index;
     uint8_t gain;
+    uint32_t reserved; /* core-0 unpacked block index + 1, or zero */
 } c1_unit_t;
 static volatile struct {
     uint32_t alive, run, posted, taken, end, done, busy, block_max;
@@ -1075,6 +1076,14 @@ static volatile struct {
     uint32_t c0_blocks;  /* blocks core 0 handed off (whole run) */
 } cl;
 static int16_t *hbuf; /* 8 KB, heap: BSS must end below the RF ring */
+static int16_t *c1buf;
+enum { C0_UNPACK, C0_READY, C0_CANCELLED };
+/* The two existing buffers exchange roles before core 1 starts its FFT.
+ * A pending copy owns buf until READY; seq=0 publishes the returned buffer. */
+static volatile struct {
+    uint32_t seq, bank, first, pos, phase;
+    int16_t *buf;
+} c0job;
 
 IRAM_ATTR static bool claim_block(uint32_t *out) {
     for (;;) {
@@ -1103,7 +1112,7 @@ IRAM_ATTR static void c1_unit(const c1_unit_t *u) {
     const unsigned total = u->start < u->blocks ? (u->blocks - u->start + stride - 1) / stride : 0;
     cl.bank = u->bank;
     cl.first = u->first;
-    cl.blocks = u->blocks;
+    cl.blocks = u->reserved ? u->reserved - 1u : u->blocks;
     cl.stride = stride;
     cl.claim = u->start;
     cl.done = 0;
@@ -1122,7 +1131,7 @@ IRAM_ATTR static void c1_unit(const c1_unit_t *u) {
             c1.busy = u->bank + 1u;
             MEMW();
             if (c1.bank_seq[u->bank] != u->seq) revoked = true; /* core 0 needs the bank */
-            else unpack_seg(fft_buf, bp, at, s0, s0 + 256u);
+            else unpack_seg(c1buf, bp, at, s0, s0 + 256u);
             MEMW();
             c1.busy = 0;
         }
@@ -1130,14 +1139,38 @@ IRAM_ATTR static void c1_unit(const c1_unit_t *u) {
             cl.claim = cl.blocks; /* stop further claims; the partial block is dropped */
             continue;
         }
-        S3_FFT(fft_buf, spec_n);
-        spec_remove_dc();
-        spec_accumulate(st.cfg->max_hold, 0, spec_n);
+        S3_FFT(c1buf, spec_n);
+        dc_track(c1buf);
+        accumulate_buf(c1buf, st.cfg->max_hold);
         st.frame_ffts++;
         st.res->ffts++;
         cl.done++;
         uint32_t dt = esp_cpu_get_cycle_count() - t0;
         if (dt > c1.block_max) c1.block_max = dt;
+    }
+    /* Earlier FFTs precede the reserved last block in the stateful DC tracker. */
+    if (u->reserved) {
+        while (c0job.phase != C0_READY && c0job.phase != C0_CANCELLED) {}
+        MEMW();
+        if (c0job.phase == C0_READY) {
+            int16_t *returned = c1buf;
+            c1buf = c0job.buf;
+            c0job.buf = returned;
+            MEMW();
+            c0job.seq = 0; /* core 0 can prepare the next input during this FFT */
+            uint32_t t0 = esp_cpu_get_cycle_count();
+            S3_FFT(c1buf, spec_n);
+            dc_track(c1buf);
+            accumulate_buf(c1buf, st.cfg->max_hold);
+            st.frame_ffts++;
+            st.res->ffts++;
+            cl.done++;
+            uint32_t dt = esp_cpu_get_cycle_count() - t0;
+            if (dt > c1.block_max) c1.block_max = dt;
+        } else {
+            MEMW();
+            c0job.seq = 0;
+        }
     }
     /* Close: no more claims; collect core 0's block still in flight. */
     cl.claim = cl.blocks;
@@ -1190,6 +1223,23 @@ IRAM_ATTR static void c0_assist(void) {
     cl.c0_blocks++;
     MEMW();
     cl.c0_seq = 0;
+}
+
+/* Poll between 256-sample copies; all FFT/DC/accumulation stays on core 1. */
+IRAM_ATTR static void c0_job_step(void) {
+    if (!c0job.seq) return;
+    if (c0job.phase == C0_UNPACK) {
+        if (c1.bank_seq[c0job.bank] != c0job.seq) {
+            MEMW(); c0job.phase = C0_CANCELLED;
+            return;
+        }
+        unsigned end = c0job.pos + 256u;
+        unpack_seg(c0job.buf, bank_ptr(c0job.bank), c0job.first, c0job.pos, end);
+        c0job.pos = end;
+        if (end == spec_n) {
+            MEMW(); c0job.phase = C0_READY;
+        }
+    }
 }
 
 /* IQS on core 1: same pipeline as iqs_slice, bank guarded like c1_unit. */
@@ -1266,6 +1316,9 @@ IRAM_ATTR void s3_core1_main(void) {
 static inline void c1_revoke(unsigned b) {
     c1.bank_seq[b] = 0;
     MEMW();
+    if (c0job.seq && c0job.bank == b && c0job.phase == C0_UNPACK) {
+        MEMW(); c0job.phase = C0_CANCELLED;
+    }
     while (c1.busy == b + 1u) {
     }
 }
@@ -1413,7 +1466,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     for (unsigned b = 0; b < RING_BANKS; b++) fill_sentinels(b, 0, RING_PAIRS);
 
 #if CONFIG_IDF_TARGET_ESP32S3
-    uint32_t assist_cost = 0, tx_max_cycles = 0, tx_guard_pairs = 2048u;
+    uint32_t assist_cost = 0, copy_cost = 0, tx_max_cycles = 0, tx_guard_pairs = 2048u;
     if (spec) { /* warm caches/tables; bank 2 holds sentinels only */
         uint32_t assist_start = esp_cpu_get_cycle_count();
         spec_unpack(bank_ptr(2), 0, 0, spec_n);
@@ -1425,6 +1478,12 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
             if (elapsed > longest) longest = elapsed;
         }
         assist_cost = esp_cpu_get_cycle_count() - assist_start;
+        if (cfg->rate == 0 && spec_n == 2048u && hbuf && ring_capture_assist) {
+            uint32_t start = esp_cpu_get_cycle_count();
+            unpack_seg(hbuf, bank_ptr(2), RING_PAIRS - 128u, 0, 256u);
+            uint32_t elapsed = esp_cpu_get_cycle_count() - start;
+            copy_cost = elapsed + elapsed / 7u;
+        }
         uint32_t start = esp_cpu_get_cycle_count();
         spec_accumulate(false, 0, CHUNK < spec_n ? CHUNK : spec_n);
         uint32_t elapsed = esp_cpu_get_cycle_count() - start;
@@ -1437,6 +1496,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         r->work_max = longest + longest / 7u;
     }
     const bool dual = (spec || iq) && ring_capture_dual_active();
+    const bool prefetch = spec && dual && ring_capture_assist && cfg->rate == 0 && spec_n == 2048u;
     memset(&sx, 0, sizeof(sx));
     ld.c0_busy = ld.c1_busy = 0;
     sx.heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -1444,9 +1504,13 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     sx.mode = (uint16_t)((dual ? 1 : 0) | (dual && ring_capture_assist ? 2 : 0));
     uint32_t c1_seq = 0, c0_lost = 0, tail_seen = 0;
     uint32_t c0_cost = assist_cost + assist_cost / 3u; /* warm-up FFT + margin; grows to the max seen */
+    uint32_t c0_slice_cost = copy_cost;
     if (dual) { /* hand the run to core 1 (idle since its last run) */
         c1.posted = c1.taken = c1.end = c1.done = c1.busy = c1.block_max = 0;
         cl.seq = cl.c0_seq = cl.hb_full = cl.c0_blocks = 0;
+        c0job.seq = 0;
+        c1buf = fft_buf;
+        c0job.buf = hbuf;
         for (unsigned i = 0; i < RING_BANKS; i++) c1.bank_seq[i] = 0;
         MEMW();
         c1.run = c1.run + 1u;
@@ -1585,16 +1649,17 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
              * before the switch; at 40/80 Msps most blocks are skipped. */
 #if CONFIG_IDF_TARGET_ESP32S3
             if (dual && spec && ring_capture_assist) {
-                /* one core-0 block (unpack + FFT) must end before the bank
-                 * preparation deadline, or before the switch if prepared */
-                uint32_t c0_pairs = c0_cost / cpp + 256u;
+                /* A whole helper block, or one input-copy slice, must fit
+                 * before bank preparation (or the switch if prepared). */
+                uint32_t c0_pairs = (prefetch ? c0_slice_cost : c0_cost) / cpp + 256u;
                 uint32_t limit = prepared || !need_next ? THRESHOLD + LATE_LIMIT / 2
                                                         : THRESHOLD - prep_pairs - LATE_LIMIT;
                 if (written + c0_pairs < limit) {
                     uint32_t t0 = esp_cpu_get_cycle_count();
-                    c0_assist();
+                    if (prefetch) c0_job_step(); else c0_assist();
                     uint32_t dt = esp_cpu_get_cycle_count() - t0;
-                    if (dt > c0_cost) c0_cost = dt;
+                    if (prefetch) { if (dt > c0_slice_cost) c0_slice_cost = dt; }
+                    else if (dt > c0_cost) c0_cost = dt;
                     ld.c0_busy += dt;
                 }
             }
@@ -1696,6 +1761,16 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
                                                 .blocks = count >> spec_log2, .start = start, .index = index,
                                                 .gain = (uint8_t)(bank_ptr(b)[first] >> 20)};
                 c1.bank_seq[b] = c1_seq;
+                if (prefetch && todo && !c0job.seq) {
+                    uint32_t block = start + (todo - 1u) * cfg->stride;
+                    c0job.bank = b;
+                    c0job.first = first + (block << spec_log2);
+                    c0job.pos = 0;
+                    c0job.phase = C0_UNPACK;
+                    c1q[i % C1_QUEUE].reserved = block + 1u;
+                    MEMW();
+                    c0job.seq = c1_seq;
+                }
                 MEMW();
                 c1.posted = i + 1u;
             }
@@ -1729,7 +1804,10 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         MEMW();
         c1.end = 1;
         MEMW();
-        while (!c1.done) txq_pump();
+        while (!c1.done) {
+            if (prefetch) c0_job_step();
+            txq_pump();
+        }
         MEMW();
         r->abandoned += c0_lost;
         r->work_max = c1.block_max; /* longest core-1 block (unpack..accumulate) */
