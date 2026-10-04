@@ -36,6 +36,18 @@ not establish PLL lock, RF reception, frequency accuracy or sensitivity; see
   20 stop/configure/restart cycles. Snapshots are never labeled continuous IQ.
 - `capture_iqs.py`: IQ8/IQ16 streaming with 4096–65536-byte host reads, raw bytes,
   payload export, per-frame indices, CRC/loss accounting and confirmed IQSEND.
+- `capture_trigger.py --port PORT --out DIR --threshold 100 --wait 3 --count 10`:
+  S3/native-USB `TRIG` collection at 16 MS/s. Saves three raw-I/Q bank spans around
+  a 64-pair AC-variance window crossing the threshold after an examined lower
+  window, checked every 256 pairs. Each arm saves
+  CRC, exact window/payload indices, pre/post lengths, examined/skipped windows and
+  device capture timestamps; the host replays the integer detector on the saved
+  window and the preceding lower window when retained. Threshold units are squared ADC codes; choose a threshold from measured
+  background, not this example. Threshold 0 is explicitly a forced diagnostic;
+  524288 exercises timeout without an event. A timeout is a valid outcome.
+  Captures are separate bursts: the gap between device capture timestamps includes
+  transfer and rearming. A window trigger is not the measured RF onset, and neither
+  the stride nor the inter-arm gap is advertised as continuous detection.
 - `trace_profiles.py`: runs the unchanged repository `tools/check_spectrum.py`
   for every advertised profile/detector, with raw serial evidence on failure.
 - `check_profiles.py`: alternate wrapper using a fresh identity file and saving
