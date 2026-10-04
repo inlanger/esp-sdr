@@ -96,7 +96,7 @@ bank, starting with the second bank. Its exact power numerator is
 threshold followed by one at or above it. Skipped work invalidates that
 below-threshold state. This removes each window's mean; it does not identify
 the transmitter or modulation. The reported hit is the qualifying window's
-start, not the exact RF onset. Only 25% of pairs are scheduled for examination;
+start, not the exact RF onset. The 64/256 grid nominally examines 25% of pairs;
 unit tails, initial history, stopping and deadline skips reduce actual coverage.
 
 On a hit the receiver preserves the preceding, trigger and following bank
