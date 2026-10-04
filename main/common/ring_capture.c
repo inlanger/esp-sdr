@@ -1402,6 +1402,40 @@ static inline void reclaim_bank(bool dual, unsigned b) { (void)dual; release_ban
 static inline bool bank_idle(bool dual, unsigned b) { (void)dual; return !st.work[b].pending; }
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32S3
+#define TRIGGER_WINDOW 64u
+#define TRIGGER_STRIDE 256u
+/* Completed banks stay immutable until the next preparation deadline. */
+typedef struct {
+    ring_unit_t unit;
+    uint64_t index;
+    unsigned pos;
+    bool pending;
+} trigger_work_t;
+
+RING_HOT static uint64_t trigger_power(const trigger_work_t *w) {
+    const uint32_t *p = bank_ptr(w->unit.bank);
+    int32_t si = 0, sq = 0;
+    uint32_t energy = 0;
+    for (unsigned j = 0; j < TRIGGER_WINDOW; j++) {
+        uint32_t word = p[(w->unit.first + w->pos + j) & RING_MASK];
+        int32_t i = (int32_t)(word << 22) >> 22, q = (int32_t)(word << 12) >> 22;
+        si += i; sq += q;
+        energy += i * i + q * q;
+    }
+    /* 4096 times AC variance, without rounding before the threshold test. */
+    return (uint64_t)TRIGGER_WINDOW * energy - (int64_t)si * si - (int64_t)sq * sq;
+}
+
+RING_HOT static void trigger_abandon(trigger_work_t *w, ring_result_t *r) {
+    if (w->pending && w->pos + TRIGGER_WINDOW <= w->unit.count) {
+        r->trigger_skipped += (w->unit.count - w->pos - TRIGGER_WINDOW) / TRIGGER_STRIDE + 1u;
+        r->trigger_below_index = UINT64_MAX;
+    }
+    w->pending = false;
+}
+#endif
+
 RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     memset(r, 0, sizeof(*r));
     memset(&st, 0, sizeof(st));
@@ -1415,6 +1449,14 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     const bool capture = cfg->mode == RING_MODE_CAPTURE;
 #if CONFIG_IDF_TARGET_ESP32S3
     const bool iq = cfg->mode == RING_MODE_IQ;
+    const bool trigger = cfg->mode == RING_MODE_TRIGGER;
+    r->trigger_below_index = UINT64_MAX;
+    trigger_work_t trigger_work = {0};
+    ring_unit_t trigger_history[RING_BANKS] = {0};
+    uint64_t trigger_indices[RING_BANKS] = {0};
+    if (trigger && (cfg->rate != 6 || cfg->trigger_threshold > 524288u)) {
+        fail(r, RING_FAIL_ARG, 5); return;
+    }
     if (iq) {
         unsigned d = cfg->iq_dec, l = 0;
         while ((1u << l) < d) l++;
@@ -1541,6 +1583,9 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
     REG_WRITE(DUMP_CTRL_REG, ctrl);
     select_banks(bank_sel_saved,1u);
     int64_t t_start = esp_timer_get_time();
+#if CONFIG_IDF_TARGET_ESP32S3
+    r->capture_start_us = (uint64_t)t_start;
+#endif
     st.last_ok = t_start;
     REG_WRITE(DUMP_CTRL_REG, ctrl | DUMP_CTRL_RUN);
     uint32_t epoch = esp_cpu_get_cycle_count();
@@ -1554,7 +1599,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
 
     for (unsigned unit = 0;; unit++) {
         const unsigned next = (b + 1) % RING_BANKS;
-        const bool need_next = !capture || unit + 1 < cfg->capture_units;
+        bool need_next = !capture || unit + 1 < cfg->capture_units;
 
         /* 1. Poll, doing work slices and output between polls. The stop
          *    decision is made mid-unit so nothing but the index read sits
@@ -1568,6 +1613,9 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
             if (age > max_age) { fail(r, RING_FAIL_AGE, age); break; }
             if (written >= THRESHOLD) {
                 if (need_next && !prepared) { /* a long slice ran past the deadline */
+#if CONFIG_IDF_TARGET_ESP32S3
+                    if (trigger) trigger_abandon(&trigger_work, r);
+#endif
                     uint32_t tp = esp_cpu_get_cycle_count();
                     reclaim_bank(dual, next);
                     start_probe[next] = (expected + THRESHOLD) & RING_MASK;
@@ -1612,6 +1660,34 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
             const unsigned prep_cycles=12000;
 #endif
             uint32_t prep_pairs = prep_cycles / cpp + 1024u;
+#if CONFIG_IDF_TARGET_ESP32S3
+            if (trigger && trigger_work.pending && !stop) {
+                uint32_t cost = r->trigger_slice_max > 4000u ? r->trigger_slice_max : 4000u;
+                if (written + cost / cpp + prep_pairs + LATE_LIMIT < THRESHOLD) {
+                    uint32_t begin = esp_cpu_get_cycle_count();
+                    uint64_t power = trigger_power(&trigger_work);
+                    uint32_t elapsed = esp_cpu_get_cycle_count() - begin;
+                    if (elapsed > r->trigger_slice_max) r->trigger_slice_max = elapsed;
+                    r->trigger_windows++;
+                    bool above = power >= (uint64_t)cfg->trigger_threshold * TRIGGER_WINDOW * TRIGGER_WINDOW;
+                    if (above && (!cfg->trigger_threshold || r->trigger_below_index != UINT64_MAX)) {
+                        r->triggered = true;
+                        r->trigger_index = trigger_work.index + trigger_work.pos;
+                        r->trigger_power = power;
+                        trigger_work.pending = false;
+                        /* Preserve the oldest bank; stop after the current unit. */
+                        need_next = false;
+                        stop = true;
+                    } else {
+                        if (!above) r->trigger_below_index = trigger_work.index + trigger_work.pos;
+                        trigger_work.pos += TRIGGER_STRIDE;
+                        trigger_work.pending = trigger_work.pos + TRIGGER_WINDOW <= trigger_work.unit.count;
+                    }
+                    continue;
+                }
+                trigger_abandon(&trigger_work, r);
+            }
+#endif
             if (need_next && !prepared &&
                 (bank_idle(dual, next) ||
                  written + prep_pairs + LATE_LIMIT >= THRESHOLD)) {
@@ -1740,6 +1816,16 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
 
         if (capture) r->cap[unit] = (ring_unit_t){.bank = (uint16_t)b, .first = (uint16_t)first, .count = count};
 #if CONFIG_IDF_TARGET_ESP32S3
+        if (trigger) {
+            trigger_history[b] = (ring_unit_t){.bank = (uint16_t)b, .first = (uint16_t)first, .count = count};
+            trigger_indices[b] = index;
+            if (r->triggered) {
+                for (unsigned j = 0; j < RING_BANKS; j++) r->cap[j] = trigger_history[(next + j) % RING_BANKS];
+                r->saved_first_index = trigger_indices[next];
+            } else if (!last && unit >= 1u) {
+                trigger_work = (trigger_work_t){.unit = trigger_history[b], .index = index, .pending = true};
+            }
+        }
         if (iq && !dual) iqs_accept(b, first, count, index);
 #endif
         uint32_t start = 0, todo = 0;
@@ -1793,6 +1879,9 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
 
     /* Writer stopped (normally or by failure). Finish queued work. */
     REG_WRITE(DUMP_CTRL_REG, 0);
+#if CONFIG_IDF_TARGET_ESP32S3
+    r->capture_end_us = (uint64_t)esp_timer_get_time();
+#endif
     REG_WRITE(DUMP_BANK_SELECT_REG, bank_sel_saved);
     r->elapsed_us = (uint64_t)(esp_timer_get_time() - t_start);
     r->pairs = index;

@@ -80,3 +80,46 @@ numbers alone do not detect every loss; check sample indices and `IQSEND`.
 Both stages use `ee.vmulas.s16.accx` on split arrays; the cost is about 12
 cycles per input pair on core 1. Without the second core the work runs in
 slices on core 0, which is only sufficient at lower ring rates.
+
+## Triggered raw I/Q (S3)
+
+`CAPS TRIG` advertises `TRIG <milliseconds> <threshold>` over native USB.
+The wait is 1–60000 ms; any host byte also stops it. This is a one-shot,
+16 MS/s capture using the existing three SRAM banks, not an IQS stream.
+Threshold is 0–524288 in signed ADC10 code squared, not dBm. Zero forces a
+diagnostic capture and must not be counted as an RF event.
+
+The detector examines 64 consecutive pairs every 256 pairs of each completed
+bank, starting with the second bank. Its exact power numerator is
+`64 * sum(I*I + Q*Q) - sum(I)^2 - sum(Q)^2`; it compares this to
+`threshold * 4096`. A positive threshold requires an examined window below
+threshold followed by one at or above it. Skipped work invalidates that
+below-threshold state. This removes each window's mean; it does not identify
+the transmitter or modulation. The reported hit is the qualifying window's
+start, not the exact RF onset. Only 25% of pairs are scheduled for examination;
+unit tails, initial history, stopping and deadline skips reduce actual coverage.
+
+On a hit the receiver preserves the preceding, trigger and following bank
+units, stops capture, and then transfers their full raw I/Q (about 2.3 ms).
+The next bank's sentinel preparation is suppressed to preserve history.
+No events are captured during transfer or until the next arm.
+
+Replies, in order:
+
+1. `TRIG 16000000 64 256 <threshold>`
+2. `TRIGMETA triggered capture_start_us capture_end_us saved_first_index trigger_window_index power_numerator examined_windows skipped_deadline_windows max_slice_cycles last_below_index`
+3. On a hit with status 0 only: `RINGDATA 3 16000000 n0 n1 n2 crc32`, then
+   `4*(n0+n1+n2)` bytes, using the existing RINGCAP layout: little-endian raw
+   words, signed I bits 0–9 and Q bits 10–19, upper bits preserved.
+4. `TRIGEND` with the same twelve end fields as SPECEND. Its `units` and
+   `pairs` count the entire armed acquisition, not just the three saved units.
+
+Sample indices restart at zero per arm. `last_below_index` is UINT64_MAX
+when absent or forced. Saved indices/power are meaningful only on a successful
+hit. Timeout and host stop send metadata and the end report without payload.
+Do not send configuration until the complete end report is received.
+Capture timestamps are software readings around writer start/stop; successive
+arms on the same boot expose the acquisition gap, including USB and host time,
+with startup/stop overhead. They are not calibrated RF timestamps. CRC and ring
+sentinels verify transport and bank bounds; physical phase continuity requires
+a controlled source. See `tools/s3/capture_trigger.py` for capture and replay.

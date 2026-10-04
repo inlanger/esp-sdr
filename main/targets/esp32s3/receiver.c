@@ -205,9 +205,9 @@ static void ring_report(const char *tag,const ring_result_t *r) {
 }
 /* RINGCAP payload: "RINGDATA units rate_hz n0 n1 n2 crc32\n", then the units'
  * raw 32-bit IQ words back to back (gapless), then the RINGCAP report. */
-static void ring_send_capture(const ring_result_t *r,unsigned rate) {
+static void ring_send_capture(const ring_result_t *r,unsigned rate,unsigned units) {
     uint32_t crc=0;
-    for(unsigned u=0;u<r->units;u++) {
+    for(unsigned u=0;u<units;u++) {
         const uint32_t *p=ring_capture_bank(r->cap[u].bank);
         unsigned first=r->cap[u].first,n=r->cap[u].count,head=RING_PAIRS-first;
         if(head>n)head=n;
@@ -215,11 +215,11 @@ static void ring_send_capture(const ring_result_t *r,unsigned rate) {
         crc=esp_rom_crc32_le(crc,(const uint8_t *)p,(n-head)*4);
     }
     char h[128];
-    snprintf(h,sizeof(h),"RINGDATA %" PRIu32 " %u %" PRIu32 " %" PRIu32 " %" PRIu32 " %08" PRIx32 "\n",
-             r->units,ring_capture_rate_hz(rate),r->cap[0].count,r->units>1?r->cap[1].count:0,
-             r->units>2?r->cap[2].count:0,crc);
+    snprintf(h,sizeof(h),"RINGDATA %u %u %" PRIu32 " %" PRIu32 " %" PRIu32 " %08" PRIx32 "\n",
+             units,ring_capture_rate_hz(rate),r->cap[0].count,units>1?r->cap[1].count:0,
+             units>2?r->cap[2].count:0,crc);
     reply(h);
-    for(unsigned u=0;u<r->units;u++) {
+    for(unsigned u=0;u<units;u++) {
         const uint32_t *p=ring_capture_bank(r->cap[u].bank);
         unsigned first=r->cap[u].first,n=r->cap[u].count,head=RING_PAIRS-first;
         if(head>n)head=n;
@@ -260,7 +260,12 @@ static bool ring_command(const char *line) {
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),RING_BANKS,RING_THRESHOLD);
         reply(h);return true;
     }
-    if(sscanf(line,"RING %u %u %c",&ms,&rate,&extra)==2) {
+    if(sscanf(line,"TRIG %u %u %c",&ms,&n,&extra)==2) {
+        if(!usb){reply("ERR transport\n");return true;}
+        if(!ms || ms>60000u || n>524288u){reply("ERR args\n");return true;}
+        c.mode=RING_MODE_TRIGGER;c.rate=rate=6;c.duration_ms=ms;c.trigger_threshold=n;tag="TRIGEND";
+        char h[80];snprintf(h,sizeof(h),"TRIG 16000000 64 256 %u\n",n);reply(h);
+    } else if(sscanf(line,"RING %u %u %c",&ms,&rate,&extra)==2) {
         c.mode=RING_MODE_STATS;c.rate=rate;c.duration_ms=ms;tag="RING";
         if(rate!=0 && rate!=1 && rate!=6){reply("ERR rate\n");return true;}
         if((!ms && !usb) || ms>86400000u){reply("ERR args\n");return true;}
@@ -302,7 +307,16 @@ static bool ring_command(const char *line) {
     rx_filter_apply();
     ring_capture_run(&c,&r);
     rx_filter_restore();
-    if(c.mode==RING_MODE_CAPTURE && !r.status)ring_send_capture(&r,rate);
+    if(c.mode==RING_MODE_TRIGGER) {
+        char h[256];
+        snprintf(h,sizeof(h),"TRIGMETA %u %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64
+                 " %" PRIu64 " %" PRIu64 " %" PRIu32 " %" PRIu64 "\n",(unsigned)r.triggered,r.capture_start_us,
+                 r.capture_end_us,r.saved_first_index,r.trigger_index,r.trigger_power,r.trigger_windows,
+                 r.trigger_skipped,r.trigger_slice_max,r.trigger_below_index);
+        reply(h);
+        if(r.triggered && !r.status)ring_send_capture(&r,rate,RING_BANKS);
+    }
+    if(c.mode==RING_MODE_CAPTURE && !r.status)ring_send_capture(&r,rate,r.units);
     ring_report(tag,&r);
     return true;
 }
@@ -346,7 +360,7 @@ static void handle_command(char *line) {
 #if CONFIG_ESP_SDR_UART_ENABLED
                   "DUALSERIAL "
 #endif
-                  "TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8 RING SPEC SPECN SPECCAPS SPECSTAT DCT\n");
+                  "TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8 RING TRIG SPEC SPECN SPECCAPS SPECSTAT DCT\n");
         }
         else if(sscanf(line,"BANDWIDTH %u %c",&n,&extra)==1 && (!n || (n>=RX_BANDWIDTH_MIN && n<=RX_BANDWIDTH_MAX))) {
             rx_filter=rx_bandwidth_dcap(n);reply("OK\n");

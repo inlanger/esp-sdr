@@ -51,7 +51,11 @@ typedef enum {
     RING_FAIL_TRANSPORT, /* SPEC requested over UART */
 } ring_status_t;
 
-typedef enum { RING_MODE_STATS, RING_MODE_CAPTURE, RING_MODE_SPEC, RING_MODE_IQ } ring_mode_t;
+typedef enum { RING_MODE_STATS, RING_MODE_CAPTURE, RING_MODE_SPEC, RING_MODE_IQ,
+#if CONFIG_IDF_TARGET_ESP32S3
+    RING_MODE_TRIGGER,
+#endif
+} ring_mode_t;
 
 typedef struct {
     ring_mode_t mode;
@@ -67,6 +71,9 @@ typedef struct {
     unsigned iq_bits;          /* IQ: 4, 8 or 16 bits per component */
     unsigned iq_shift;         /* IQ: rounding right shift of the FIR output (10-bit sample * 32) */
     bool iq_rot;               /* IQ: shift by +fs/4 before the FIR (LO tuned fs/4 below) */
+#if CONFIG_IDF_TARGET_ESP32S3
+    uint32_t trigger_threshold; /* TRIG: AC variance in signed-10-bit ADC code squared */
+#endif
 } ring_config_t;
 
 typedef struct {
@@ -84,6 +91,14 @@ typedef struct {
     uint32_t frames, drops, abandoned, ffts;
     bool stopped_by_host;
     ring_unit_t cap[RING_BANKS];
+#if CONFIG_IDF_TARGET_ESP32S3
+    bool triggered;
+    uint64_t capture_start_us, capture_end_us;
+    uint64_t saved_first_index, trigger_index, trigger_power;
+    uint64_t trigger_below_index; /* Last below-threshold window; UINT64_MAX if none. */
+    uint64_t trigger_windows, trigger_skipped;
+    uint32_t trigger_slice_max;
+#endif
 } ring_result_t;
 
 void ring_capture_init(void);
