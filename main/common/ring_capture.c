@@ -386,7 +386,7 @@ IRAM_ATTR static void spec_accumulate(bool max_hold, unsigned from, unsigned to)
         for (unsigned k = from; k < to; k++, x += 2) {
             int32_t re = x[0], im = x[1];
             uint32_t power = (uint32_t)(re * re) + (uint32_t)(im * im); /* <= 2^31 */
-            if (power > pk[k]) pk[k] = power;
+            pk[k] = power > pk[k] ? power : pk[k];
         }
     } else {
         for (unsigned k = from; k < to; k++, x += 2) {
@@ -921,7 +921,10 @@ void ring_capture_set_dual(bool on) { c1_enabled = on; }
 IRAM_ATTR static bool c1_txq_push(const uint8_t *d, uint32_t n) {
     uint32_t head = txq_head, tail = *(volatile uint32_t *)&txq_tail;
     if (TXQ_SIZE - (head - tail) < n) return false;
-    for (uint32_t i = 0; i < n; i++) txq[(head + i) & (TXQ_SIZE - 1u)] = d[i];
+    uint32_t off = head & (TXQ_SIZE - 1u), first = TXQ_SIZE - off;
+    if (first > n) first = n;
+    memcpy(txq + off, d, first);
+    memcpy(txq, d + first, n - first);
     MEMW();
     *(volatile uint32_t *)&txq_head = head + n;
     return true;
@@ -935,11 +938,11 @@ static struct {
     uint32_t *src;
 } c1enc;
 
-/* One slice of the pending frame: 256 bins, then 1 KB of CRC, then the push. */
+/* One slice of the pending frame: 128 bins, then 512 bytes of CRC, then the push. */
 IRAM_ATTR static void c1_encode_step(void) {
     if (!c1enc.pending) return;
     if (c1enc.k < spec_n) {
-        unsigned end = c1enc.k + 256u;
+        unsigned end = c1enc.k + 128u;
         if (end > spec_n) end = spec_n;
         uint8_t *o = frame_out + sizeof(spec_header_t);
         uint32_t *a = c1enc.src;
@@ -959,7 +962,7 @@ IRAM_ATTR static void c1_encode_step(void) {
     }
     if (c1enc.crc_at < c1enc.len) {
         uint32_t n = c1enc.len - c1enc.crc_at;
-        if (n > 1024u) n = 1024u;
+        if (n > 512u) n = 512u;
         c1enc.crc = esp_rom_crc32_le(c1enc.crc, frame_out + c1enc.crc_at, n);
         c1enc.crc_at += n;
         return;
@@ -1049,7 +1052,7 @@ IRAM_ATTR static void accumulate_buf(const int16_t *x, bool max_hold) {
         for (unsigned k = 0; k < spec_n; k++, x += 2) {
             int32_t re = x[0], im = x[1];
             uint32_t power = (uint32_t)(re * re) + (uint32_t)(im * im);
-            if (power > pk[k]) pk[k] = power;
+            pk[k] = power > pk[k] ? power : pk[k];
         }
     } else {
         for (unsigned k = 0; k < spec_n; k++, x += 2) {
@@ -1250,7 +1253,7 @@ IRAM_ATTR void s3_core1_main(void) {
             if (st.cfg->mode == RING_MODE_IQ) c1_iq_unit(&u); else c1_unit(&u);
             taken++;
             c1.taken = taken;
-            c1_encode_step();
+            if (taken == c1.posted) c1_encode_step();
         }
         /* A stride-selected tail without FFTs has no spectrum to flush. */
         if (st.frame_ffts) c1_emit_frame();
