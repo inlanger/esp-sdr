@@ -285,12 +285,13 @@ static int16_t window_q15[RING_SPEC_NFFT_MAX];
 /* Window with each coefficient twice (I and Q lanes) for the PIE unpack. */
 static int16_t win2[2 * RING_SPEC_NFFT_MAX] __attribute__((aligned(16)));
 void s3_unpack_iq10_win(const uint32_t *src, int16_t *dst, const int16_t *win2, unsigned groups8);
+void s3_power_max_u32(const int16_t *x, uint32_t *peak, unsigned groups4);
 #endif
 static int16_t fft_buf[2 * RING_SPEC_NFFT_MAX] __attribute__((aligned(16)));
 /* Indexed by FFT output slot (bit-reversed order); emit maps slot -> bin.
  * mean: float power sum; max-hold: uint32 power per FFT slot (same storage). */
 #if CONFIG_IDF_TARGET_ESP32S3
-static float accum_buf[2][RING_SPEC_NFFT_MAX]; /* double buffer: core 1 encodes one while filling the other */
+static float accum_buf[2][RING_SPEC_NFFT_MAX] __attribute__((aligned(16))); /* encode one while filling the other */
 #else
 static float accum_buf[1][RING_SPEC_NFFT_MAX];
 #endif
@@ -383,11 +384,15 @@ IRAM_ATTR static void spec_accumulate(bool max_hold, unsigned from, unsigned to)
     const int16_t *x = fft_buf + 2 * from;
     if (max_hold) {
         uint32_t *pk = (uint32_t *)accum;
+#if CONFIG_IDF_TARGET_ESP32S3
+        s3_power_max_u32(x, pk + from, (to - from) / 4u);
+#else
         for (unsigned k = from; k < to; k++, x += 2) {
             int32_t re = x[0], im = x[1];
             uint32_t power = (uint32_t)(re * re) + (uint32_t)(im * im); /* <= 2^31 */
             pk[k] = power > pk[k] ? power : pk[k];
         }
+#endif
     } else {
         for (unsigned k = from; k < to; k++, x += 2) {
             int32_t re = x[0], im = x[1];
@@ -1050,11 +1055,7 @@ IRAM_ATTR static void unpack_to(int16_t *dst, const uint32_t *p, unsigned at) {
 IRAM_ATTR static void accumulate_buf(const int16_t *x, bool max_hold) {
     if (max_hold) {
         uint32_t *pk = (uint32_t *)accum;
-        for (unsigned k = 0; k < spec_n; k++, x += 2) {
-            int32_t re = x[0], im = x[1];
-            uint32_t power = (uint32_t)(re * re) + (uint32_t)(im * im);
-            pk[k] = power > pk[k] ? power : pk[k];
-        }
+        s3_power_max_u32(x, pk, spec_n / 4u);
     } else {
         for (unsigned k = 0; k < spec_n; k++, x += 2) {
             int32_t re = x[0], im = x[1];
