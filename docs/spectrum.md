@@ -110,7 +110,10 @@ readers before giving SRAM back to the RF writer. DC state has one owner.
 `DUAL 0` selects the single-core fallback, `DUAL 1` enables the worker with
 assistance (default), and `DUAL 2` disables assistance. `DUAL?` returns the
 active mode and whether the worker booted; re-query `SPECINFO?` after changing
-modes. The fallback splits FFTs into radix-2 stages, with bounded unpacking,
+modes. At 80 MS/s with 2048 bins in `DUAL 1`, core 0 prefetches windowed input
+for core 1 to FFT; `ASSIST?` counts complete FFTs on core 0 and therefore stays
+zero, while `SPS1` bit 1 still reports enabled assistance.
+The fallback splits FFTs into radix-2 stages, with bounded unpacking,
 accumulation and checksum slices. Both paths support 256/512/1024/2048 bins
 at 16/40/80 MS/s. The capture scheduler and SIMD kernel
 run from internal RAM to avoid flash-cache delays. C6 and C61 use two banks
