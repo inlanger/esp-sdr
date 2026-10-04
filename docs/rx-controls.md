@@ -73,6 +73,24 @@ above 3000 MHz, matching the pinned PHY's band selection. Its direct path uses
 C5's `phy_set_freq` re-enters channel conversion and is deliberately bypassed.
 S31 likewise keeps arbitrary frequencies out of channel calibration.
 
+### Experimental S3 lower-band LO conversion
+
+The S3 receiver uses the tuning change from
+[ESPARGOS/esp-sdr `1fe5535`](https://github.com/ESPARGOS/esp-sdr/commit/1fe55351036337359bcac1ccca6db04c32fde4f8),
+based on the [eSpDR S3 investigation](https://github.com/h0m3us3r/eSpDR/blob/f279bf823eee41796dfd1ac21f13e1ed9b418c82/docs/LO-EXTENSION.md).
+`FREQ 1842` through `FREQ 2209` select 5/6 conversion; the requested frequency
+is the receive LO, so `FREQ 2001` programs a 2401.2 MHz PLL coordinate.
+Calibration runs in normal conversion, then RX setup selects CKGEN
+`0x65:0[4]` on host 1 and waits 3 ms. Other frequencies restore normal conversion.
+Only S3 enables this path in this fork; `rx_lo.h` is copied unchanged from upstream.
+
+`FOFS` remains an offset in PLL kHz: one unit gives a nominal 1 kHz receive-LO
+step in normal mode and 5/6 kHz in lower-band mode, before PLL quantization.
+The stream header reports the integer `FREQ` setting, not this fine offset.
+`OK` confirms a tuning attempt, not PLL lock or calibrated reception. Upstream
+reports discrete external-tone checks at nominal 80 MS/s; this does not establish
+our board's antenna response, sensitivity or lower-band 16 MS/s operation.
+
 The browser negotiates ranges for every chip and uses them for text entry and
 spectrum click-to-tune. Older firmware retains its advertised limits, with
 legacy fallbacks only when it does not advertise `TUNEEXT`. An informational
