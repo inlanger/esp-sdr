@@ -113,6 +113,8 @@ active mode and whether the worker booted; re-query `SPECINFO?` after changing
 modes. At 80 MS/s with 2048 bins in `DUAL 1`, core 0 prefetches windowed input
 for core 1 to FFT; `ASSIST?` counts complete FFTs on core 0 and therefore stays
 zero, while `SPS1` bit 1 still reports enabled assistance.
+S3 MAX accumulation uses PIE with exact unsigned 32-bit power, including the
+full-scale I=Q=-32768 case. MEAN retains its existing floating-point accumulation.
 The fallback splits FFTs into radix-2 stages, with bounded unpacking,
 accumulation and checksum slices. Both paths support 256/512/1024/2048 bins
 at 16/40/80 MS/s. The capture scheduler and SIMD kernel
