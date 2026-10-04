@@ -39,7 +39,7 @@ not establish PLL lock, RF reception, frequency accuracy or sensitivity; see
 - `capture_trigger.py --port PORT --out DIR --threshold 100 --wait 3 --count 10`:
   S3/native-USB `TRIG` collection at 16 MS/s. Saves three raw-I/Q bank spans around
   a 64-pair AC-variance window crossing the threshold after an examined lower
-  window, checked every 256 pairs. Each arm saves
+  window, checked every 128 pairs (256 in the initial TRIG firmware). Each arm saves
   CRC, exact window/payload indices, pre/post lengths, examined/skipped windows and
   device capture timestamps; the host replays the integer detector on the saved
   window and the preceding lower window when retained. Threshold units are squared ADC codes; choose a threshold from measured

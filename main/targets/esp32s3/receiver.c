@@ -264,7 +264,7 @@ static bool ring_command(const char *line) {
         if(!usb){reply("ERR transport\n");return true;}
         if(!ms || ms>60000u || n>524288u){reply("ERR args\n");return true;}
         c.mode=RING_MODE_TRIGGER;c.rate=rate=6;c.duration_ms=ms;c.trigger_threshold=n;tag="TRIGEND";
-        char h[80];snprintf(h,sizeof(h),"TRIG 16000000 64 256 %u\n",n);reply(h);
+        char h[80];snprintf(h,sizeof(h),"TRIG 16000000 64 128 %u\n",n);reply(h);
     } else if(sscanf(line,"RING %u %u %c",&ms,&rate,&extra)==2) {
         c.mode=RING_MODE_STATS;c.rate=rate;c.duration_ms=ms;tag="RING";
         if(rate!=0 && rate!=1 && rate!=6){reply("ERR rate\n");return true;}

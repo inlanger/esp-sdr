@@ -89,15 +89,17 @@ The wait is 1–60000 ms; any host byte also stops it. This is a one-shot,
 Threshold is 0–524288 in signed ADC10 code squared, not dBm. Zero forces a
 diagnostic capture and must not be counted as an RF event.
 
-The detector examines 64 consecutive pairs every 256 pairs of each completed
+The detector examines 64 consecutive pairs every 128 pairs of each completed
 bank, starting with the second bank. Its exact power numerator is
 `64 * sum(I*I + Q*Q) - sum(I)^2 - sum(Q)^2`; it compares this to
 `threshold * 4096`. A positive threshold requires an examined window below
 threshold followed by one at or above it. Skipped work invalidates that
 below-threshold state. This removes each window's mean; it does not identify
 the transmitter or modulation. The reported hit is the qualifying window's
-start, not the exact RF onset. The 64/256 grid nominally examines 25% of pairs;
+start, not the exact RF onset. The 64/128 grid nominally examines 50% of pairs;
 unit tails, initial history, stopping and deadline skips reduce actual coverage.
+Earlier builds advertise stride 256 (25%); use the stride in the reply.
+Crossings within an already active signal are possible: this is not a packet-start detector.
 
 On a hit the receiver preserves the preceding, trigger and following bank
 units, stops capture, and then transfers their full raw I/Q (about 2.3 ms).
@@ -106,7 +108,7 @@ No events are captured during transfer or until the next arm.
 
 Replies, in order:
 
-1. `TRIG 16000000 64 256 <threshold>`
+1. `TRIG 16000000 64 128 <threshold>`
 2. `TRIGMETA triggered capture_start_us capture_end_us saved_first_index trigger_window_index power_numerator examined_windows skipped_deadline_windows max_slice_cycles last_below_index`
 3. On a hit with status 0 only: `RINGDATA 3 16000000 n0 n1 n2 crc32`, then
    `4*(n0+n1+n2)` bytes, using the existing RINGCAP layout: little-endian raw

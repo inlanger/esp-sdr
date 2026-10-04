@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Collect S3 TRIG raw-I/Q events; each arm has a separate sample clock.
 
-Fixed 16 MS/s, 64-pair variance windows every 256 pairs. Threshold zero is
+Fixed 16 MS/s, 64-pair variance windows; the reply advertises the stride. Threshold zero is
 forced diagnostic capture, not RF detection. No continuous archive is implied.
 """
 import argparse
@@ -46,6 +46,11 @@ def power_numerator(raw, offset):
 def verify_capture(record, raw):
     """Recheck saved metadata and exact integer detector arithmetic offline."""
     meta, end = record['meta'], record['end']
+    profile = report(record['start_reply'], 'TRIG', ('rate', 'window', 'stride', 'threshold'))
+    if (profile['rate'] != 16000000 or profile['window'] != 64
+            or profile['stride'] not in (128, 256) or profile['threshold'] != record['threshold']):
+        raise ValueError('Unsupported TRIG profile')
+    stride = profile['stride']
     if end['status'] or meta['triggered'] not in (0, 1):
         raise ValueError(f'TRIG failure: {end}')
     if meta['capture_end_us'] < meta['capture_start_us']:
@@ -76,7 +81,7 @@ def verify_capture(record, raw):
     first, hit = meta['saved_first_index'], meta['trigger_window_index']
     pre = hit - first
     if (not counts[0] <= pre or pre + 64 > counts[0] + counts[1]
-            or first + count != end['pairs'] or end['units'] < 3 or (pre - counts[0]) % 256):
+            or first + count != end['pairs'] or end['units'] < 3 or (pre - counts[0]) % stride):
         raise ValueError('Trigger window outside middle bank or saved interval outside capture')
     numerator = power_numerator(raw, pre)
     if numerator != meta['power_numerator'] or numerator < record['threshold'] * 4096:
@@ -140,7 +145,7 @@ def main():
                 receiver.streaming = True
                 receiver.write((command + '\n').encode('ascii'))
                 record['start_reply'] = receiver.line()
-                if record['start_reply'] != f'TRIG 16000000 64 256 {args.threshold}':
+                if record['start_reply'] not in (f'TRIG 16000000 64 {stride} {args.threshold}' for stride in (128, 256)):
                     raise ValueError(f'Unexpected start: {record["start_reply"]}')
                 record['meta_line'] = wait_line(receiver, time.monotonic() + args.wait + 10)
                 record['meta'] = report(record['meta_line'], 'TRIGMETA', META_FIELDS)

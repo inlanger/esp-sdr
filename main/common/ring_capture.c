@@ -1404,7 +1404,7 @@ static inline bool bank_idle(bool dual, unsigned b) { (void)dual; return !st.wor
 
 #if CONFIG_IDF_TARGET_ESP32S3
 #define TRIGGER_WINDOW 64u
-#define TRIGGER_STRIDE 256u
+#define TRIGGER_STRIDE 128u
 /* Completed banks stay immutable until the next preparation deadline. */
 typedef struct {
     ring_unit_t unit;
