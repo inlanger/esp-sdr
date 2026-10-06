@@ -610,7 +610,8 @@ RING_HOT static void unit_done(void) {
     sx.pairs_done += w->count;
     st.frame_units++;
     if (st.phase == BLK_IDLE && st.frame_ffts &&
-        (txq_head == txq_tail || st.frame_ffts >= S3_BATCH_FFT_LIMIT))
+        (st.frame_ffts >= S3_BATCH_FFT_LIMIT ||
+         (st.frame_units >= st.cfg->units_per_frame && txq_head == txq_tail)))
         frame_close();
 #else
     /* close only with at least one FFT (or after 4x upf units without one) */
@@ -879,7 +880,8 @@ RING_HOT static bool work_slice(void) {
 #if CONFIG_IDF_TARGET_ESP32S3
             /* A live bank is not in frame_pairs yet: only finish a deferred retirement. */
             if (st.blk_retired &&
-                (txq_head == txq_tail || st.frame_ffts >= S3_BATCH_FFT_LIMIT))
+                (st.frame_ffts >= S3_BATCH_FFT_LIMIT ||
+                 (st.frame_units >= st.cfg->units_per_frame && txq_head == txq_tail)))
                 frame_close();
 #else
             if (st.frame_units >= st.cfg->units_per_frame) frame_close();
@@ -1220,7 +1222,8 @@ IRAM_ATTR static void c1_unit(const c1_unit_t *u) {
     st.frame_units++;
     c1_encode_step(); /* make bounded output progress even with a permanent work backlog */
     if (st.frame_ffts && (st.frame_ffts >= S3_BATCH_FFT_LIMIT ||
-        (!c1enc.pending && txq_head == *(volatile uint32_t *)&txq_tail)))
+        (st.frame_units >= st.cfg->units_per_frame && !c1enc.pending &&
+         txq_head == *(volatile uint32_t *)&txq_tail)))
         c1_emit_frame();
     ld.c1_busy += esp_cpu_get_cycle_count() - tu;
 }
@@ -1512,7 +1515,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         return;
     }
 #if CONFIG_IDF_TARGET_ESP32S3
-    /* Legacy stride/batch arguments remain accepted; deadlines limit SPEC work. */
+    /* Legacy stride remains accepted; deadlines limit SPEC work. */
     ring_config_t automatic = *cfg;
     if (spec) { automatic.stride = 1; cfg = &automatic; st.cfg = cfg; }
 #endif

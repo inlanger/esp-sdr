@@ -27,11 +27,15 @@ uses the original S3 compatibility profiles.
 
 S3 `SPEC` attempts every available FFT block. Completed powers accumulate
 while the previous output drains, then form a new batch at a bank retirement
-(or when an already retired bank's in-flight FFT finishes). The legacy stride
-and units-per-frame arguments remain accepted but no longer limit S3 processing.
+(or when an already retired bank's in-flight FFT finishes). `units_per_frame`
+sets the minimum number of retired bank units per batch; output may wait longer
+for the queue to drain. Use 1 for the earliest available batch or a larger value
+to reduce encoding and USB overhead. The legacy stride argument remains accepted
+but no longer limits S3 processing.
 Other targets retain their existing semantics. Mean versus maximum remains
 selectable; frame duration and FFT count vary with processing and USB throughput.
-An internal batch limit prevents the 16-bit FFT count from wrapping; if output
+An internal batch limit overrides that minimum to prevent the 16-bit FFT count
+from wrapping. The final nonempty batch also need not reach the minimum. If output
 is blocked at that limit, discarded output is reported through the existing
 drop counters. This does not make FFT coverage continuous and does not change TRIG.
 
