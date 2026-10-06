@@ -64,6 +64,8 @@ int s3_fft2r_sc16_rnd_stage(int16_t *data, int N, int16_t *w, unsigned stage);
 /* S3 bank deadlines must not depend on flash-cache misses. */
 #if CONFIG_IDF_TARGET_ESP32S3
 #define RING_HOT IRAM_ATTR
+/* Leave room for one whole bank plus its already copied in-flight FFT. */
+#define S3_BATCH_FFT_LIMIT (UINT16_MAX - RING_PAIRS / 256u)
 #else
 #define RING_HOT
 #endif
@@ -426,6 +428,9 @@ static struct {
     /* block in flight */
     unsigned phase, pos, blk_bank, fft_stage;
     uint32_t blk_at;
+#if CONFIG_IDF_TARGET_ESP32S3
+    bool blk_retired; /* metadata already includes the in-flight FFT's bank */
+#endif
     /* frame emission in progress (has priority over new accumulation) */
     bool emitting;
     int64_t last_ok;  /* last frame accepted by the output queue */
@@ -589,6 +594,10 @@ RING_HOT static void unit_done(void) {
         st.res->abandoned++;
         st.frame_flags |= 2;
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    if (st.blk_bank == b && (st.phase == BLK_FFT || st.phase == BLK_ACCUM))
+        st.blk_retired = true;
+#endif
     w->pending = false;
     for (unsigned i = 1; i < st.fifo_len; i++) st.fifo[i - 1] = st.fifo[i];
     st.fifo_len--;
@@ -599,11 +608,16 @@ RING_HOT static void unit_done(void) {
     st.frame_pairs += w->count;
 #if CONFIG_IDF_TARGET_ESP32S3
     sx.pairs_done += w->count;
-#endif
+    st.frame_units++;
+    if (st.phase == BLK_IDLE && st.frame_ffts &&
+        (txq_head == txq_tail || st.frame_ffts >= S3_BATCH_FFT_LIMIT))
+        frame_close();
+#else
     /* close only with at least one FFT (or after 4x upf units without one) */
     if (++st.frame_units >= st.cfg->units_per_frame && st.phase == BLK_IDLE &&
         (st.frame_ffts || st.frame_units >= 4u * st.cfg->units_per_frame))
         frame_close();
+#endif
 }
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -862,7 +876,14 @@ RING_HOT static bool work_slice(void) {
             st.phase = BLK_IDLE;
             st.frame_ffts++;
             st.res->ffts++;
+#if CONFIG_IDF_TARGET_ESP32S3
+            /* A live bank is not in frame_pairs yet: only finish a deferred retirement. */
+            if (st.blk_retired &&
+                (txq_head == txq_tail || st.frame_ffts >= S3_BATCH_FFT_LIMIT))
+                frame_close();
+#else
             if (st.frame_units >= st.cfg->units_per_frame) frame_close();
+#endif
         }
     } else if (st.phase == BLK_UNPACK) {
         unsigned end = st.pos + UNPACK_CHUNK < spec_n ? st.pos + UNPACK_CHUNK : spec_n;
@@ -877,6 +898,9 @@ RING_HOT static bool work_slice(void) {
             unit_done();
         } else {
             st.blk_bank = b;
+#if CONFIG_IDF_TARGET_ESP32S3
+            st.blk_retired = false;
+#endif
             st.blk_at = w->first + (w->next_block << spec_log2);
             w->next_block += st.cfg->stride;
             st.phase = BLK_UNPACK;
@@ -1193,7 +1217,10 @@ IRAM_ATTR static void c1_unit(const c1_unit_t *u) {
     }
     st.frame_pairs += u->count;
     sx.pairs_done += u->count;
-    if (++st.frame_units >= st.cfg->units_per_frame && (st.frame_ffts || st.frame_units >= 4u * st.cfg->units_per_frame))
+    st.frame_units++;
+    c1_encode_step(); /* make bounded output progress even with a permanent work backlog */
+    if (st.frame_ffts && (st.frame_ffts >= S3_BATCH_FFT_LIMIT ||
+        (!c1enc.pending && txq_head == *(volatile uint32_t *)&txq_tail)))
         c1_emit_frame();
     ld.c1_busy += esp_cpu_get_cycle_count() - tu;
 }
@@ -1484,6 +1511,11 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         fail(r, RING_FAIL_ARG, 0);
         return;
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    /* Legacy stride/batch arguments remain accepted; deadlines limit SPEC work. */
+    ring_config_t automatic = *cfg;
+    if (spec) { automatic.stride = 1; cfg = &automatic; st.cfg = cfg; }
+#endif
     if (spec) spec_setup(cfg->nfft);
     dc = (spectrum_dc_t){0};
 #if !CONFIG_IDF_TARGET_ESP32S3
@@ -1911,7 +1943,7 @@ RING_HOT void ring_capture_run(const ring_config_t *cfg, ring_result_t *r) {
         r->work_max = iqs_done ? (uint32_t)(iqs_cyc * 100u / iqs_done) : 0; /* cycles/pair x100 */
     } else if (spec) {
         while (work_slice()) txq_pump();
-        if (st.frame_units) {
+        if (st.frame_ffts) {
             frame_close();
             while (st.emitting) emit_chunk();
         }

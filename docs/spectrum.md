@@ -25,6 +25,16 @@ S3 spectra require native USB.
 Unsupported controls stay hidden. Existing S3 firmware without `SPECCAPS`
 uses the original S3 compatibility profiles.
 
+S3 `SPEC` attempts every available FFT block. Completed powers accumulate
+while the previous output drains, then form a new batch at a bank retirement
+(or when an already retired bank's in-flight FFT finishes). The legacy stride
+and units-per-frame arguments remain accepted but no longer limit S3 processing.
+Other targets retain their existing semantics. Mean versus maximum remains
+selectable; frame duration and FFT count vary with processing and USB throughput.
+An internal batch limit prevents the 16-bit FFT count from wrapping; if output
+is blocked at that limit, discarded output is reported through the existing
+drop counters. This does not make FFT coverage continuous and does not change TRIG.
+
 Send `SPEC <milliseconds> <stride> <units_per_frame> <detector> <rate_code>
 <fft_bins> [stats]`. When `CAPS` includes `SPECSTAT`, append `1` to receive
 statistics alongside spectra (omitting it preserves the original protocol). Zero milliseconds runs until a stop byte; detector 0 means mean
@@ -65,10 +75,11 @@ SPECEND status detail units pairs elapsed_us late_max work_max_cycles frames dro
 ```
 
 Normal stops return status 0. A bank deadline/continuity failure stops capture
-instead of silently presenting broken timing. Empty S3 frames are dropped.
-At the end of an S3 worker capture, a tail containing no selected FFT is not
+instead of silently presenting broken timing. S3 emits only nonempty batches.
+At the end of an S3 capture, a tail containing no completed FFT is not
 emitted and does not count as an output drop; its samples remain in the final
-`pairs` total. Empty runtime frames still count as drops.
+`pairs` total. Skipped FFT work and discarded nonempty output frames are counted
+separately as abandoned processing and output drops.
 A host that stops reading can lose a partial frame and the end record when
 bounded output timeouts expire. The decoder resynchronizes on CRC-valid frames
 or an end record; if it cannot establish the end boundary, it marks the
