@@ -23,3 +23,10 @@ CONFIG_ESP_SDR_UART_ENABLED=y
 CONFIG_ESP_SDR_UART_BAUD=2000000
 CONFIG_ESP_SDR_UART_TX_PIN=11
 CONFIG_ESP_SDR_UART_RX_PIN=12
+
+# Soup's C5 memory settings: RX-only operation leaves room for the 32 KiB
+# CSPEC block copy and 16 KiB output ring instead of ten Wi-Fi packet buffers.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+# CSPEC intentionally keeps the CPU busy; an idle-task watchdog dump would
+# corrupt the serial stream. Capture and host-stall waits have their own limits.
+# CONFIG_ESP_TASK_WDT_EN is not set

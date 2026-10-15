@@ -13,6 +13,17 @@ Build with the `esp32c5` target and the SDK revision in `firmware-targets.json`.
 The measured-gap calculation requires the existing fixed 240 MHz CPU setting.
 This code adds no board GPIO/antenna-switch setup. XIAO uses its external antenna.
 
+The shared SPEC workspace uses Soup's `.c5_spectrum` placement at `0x40838000`
+inside the reserved RF bank. Its 26656 bytes end at `0x4083e820`; linker checks
+retain the ordinary BSS/data/IRAM boundary at `0x40820000` and enforce the
+workspace end below `0x40840000`. SPEC accepts at most 2048 pairs (8192 dump
+bytes): FAST writes below `0x40822000`, STOCK below `0x40832000`. CPU processing
+uses the workspace only after returning bank ownership. BIGCAP may overwrite
+it; every SPEC command rebuilds its FFT table and window. CSPEC uses separate
+heap buffers. The C5 defaults retain four Wi-Fi RX packet buffers and disable
+the idle-task watchdog, as in Soup, so its diagnostic output cannot enter the
+long-running CSPEC binary stream; capture/transport waits remain bounded.
+
 ## Commands
 
 Existing `C5SDR 6 burst 16380`, `DATA`, `SPEC`, `SPC1` and `SPS1` wire formats
