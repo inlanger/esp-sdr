@@ -3,7 +3,11 @@
 #include "rx_bandwidth.h"
 static bool limits_command(const char *line) {
     if(strcmp(line,"LIMITS?"))return false;
+#if CONFIG_IDF_TARGET_ESP32C5
+    char h[384];
+#else
     char h[224];
+#endif
     snprintf(h,sizeof(h),"LIMITS {\"gain\":[0,%u,1],\"bandwidth\":"
 #if CONFIG_IDF_TARGET_ESP32H2
              "[4,11,1,0]"
@@ -34,6 +38,10 @@ static bool limits_command(const char *line) {
 #else
              "80000000,40000000,20000000,10000000,8000000,4000000"
 #endif
-             "],\"bits\":[8,10]}\n",gain_max());
+             "],\"bits\":[8,10]"
+#if CONFIG_IDF_TARGET_ESP32C5
+             ",\"maxSamples\":32704,\"freqStepHz\":1000,\"cspec\":{\"nfft\":[16,256],\"modes\":[\"mean\",\"max\",\"both\"]}"
+#endif
+             "}\n",gain_max());
     reply(h);return true;
 }

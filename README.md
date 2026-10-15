@@ -1,5 +1,9 @@
 # ESP-SDR firmware
 
+This fork adds a minimal [C5 receiver subset](docs/c5-receiver.md): fast/long
+I/Q captures and gapped CSPEC from ESPsoup, with upstream receive DC recovery.
+`FWOPT?` identifies the C5 build as `inlanger-c5-1`.
+
 <img src="docs/espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">
 
 ESP-SDR turns the ESP32's built-in 2.4 GHz Wi-Fi radio into a

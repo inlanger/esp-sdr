@@ -23,6 +23,12 @@
 #define CONFIG_IDF_TARGET_ESP32C6 0
 #endif
 #include "chip.h"
+#if CONFIG_IDF_TARGET_ESP32C5
+#include "rx_recalibration.h"
+#define CAP_MAX_WORDS 32704u
+#else
+#define CAP_MAX_WORDS IQ_WORDS
+#endif
 #include "burst_serial.h"
 #include "spectrum.h"
 #if CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32C6
@@ -74,7 +80,12 @@ static void reply(const char *s) { (void)send_bytes(s,strlen(s)); }
 #include "burst_limits.h"
 
 static void prepare_rx(void) {
+#if CONFIG_IDF_TARGET_ESP32C5
+    static unsigned calibrated_mhz;
+    if(rx_ready && !rx_recalibration_stale())return;
+#else
     if(rx_ready)return;
+#endif
 #if CONFIG_IDF_TARGET_ESP32C61
     burst_gain_mirror(-1);
     if(gain_defaults_saved) {
@@ -84,7 +95,14 @@ static void prepare_rx(void) {
     }
 #endif
 #if CONFIG_IDF_TARGET_ESP32C5
-    phy_chip_set_chan(frequency_mhz,rx_channel_mode);
+    /* Driver preparation can rebuild DC; perform our measurement afterwards.
+     * Never hold the PHY mutex around esp_wifi_set_channel. */
+    if(!rx_ready)phy_chip_set_chan(frequency_mhz,rx_channel_mode);
+    if(calibrated_mhz != frequency_mhz || rx_recalibration_stale()) {
+        rx_recalibrate(frequency_mhz);
+        calibrated_mhz=frequency_mhz;
+    }
+    c5_restore_chan(frequency_mhz,rx_channel_mode);
 #else
     phy_chip_set_chan(frequency_mhz,0);
 #endif
@@ -185,7 +203,15 @@ static bool acquire_iq(unsigned n,unsigned divider,unsigned *capture_us) {
     return true;
 }
 
+#if CONFIG_IDF_TARGET_ESP32C5
+#include "c5_engine.h"
+#include "c5_cspec.h"
+#endif
+
 static bool spectrum_acquire(unsigned n, unsigned rate, const uint32_t **data, unsigned *elapsed) {
+#if CONFIG_IDF_TARGET_ESP32C5
+    if(!opt_stock_engine)return opt_acquire(n,rate,data,elapsed);
+#endif
     bool ok = acquire_iq(n, rate, elapsed);
     *data = IQ_BUFFER;
     return ok;
@@ -194,6 +220,9 @@ static bool spectrum_acquire(unsigned n, unsigned rate, const uint32_t **data, u
 #include "ring_probe.h"
 
 static bool capture(unsigned n,unsigned divider,unsigned format) {
+#if CONFIG_IDF_TARGET_ESP32C5
+    if(!opt_stock_engine || n>IQ_WORDS)return opt_capture(n,divider,format,false);
+#endif
     unsigned elapsed;
     if (!acquire_iq(n, divider, &elapsed)) return false;
     size_t bytes=wire_size(n,format);
@@ -277,6 +306,9 @@ void app_main(void) {
 }
 
 static void handle_command(char *line) {
+#if CONFIG_IDF_TARGET_ESP32C5
+    if(engine_command(line) || cont_command(line))return;
+#endif
 #ifdef RING_PROBE
     if(ring_probe_command(line)) return;
 #endif
@@ -307,7 +339,7 @@ static void handle_command(char *line) {
         }
 #endif
         else if(sscanf(line,"RXRUN %u %u %u %u %c",&n,&rate,&repeats,&crc,&extra)==4 &&
-                n>=256 && n<=IQ_WORDS && rate<=(CONFIG_IDF_TARGET_ESP32C6?0:5) && repeats>0 && repeats<=1000 && (crc==16 || crc==20)) {
+                n>=256 && n<=CAP_MAX_WORDS && rate<=(CONFIG_IDF_TARGET_ESP32C6?0:5) && repeats>0 && repeats<=1000 && (crc==16 || crc==20)) {
             /* Format 16 = IQ8, 20 = IQ10 packed. Each frame
              * is a separate capture, with RF gaps during USB transfer. */
             bool ok=true;
@@ -323,6 +355,9 @@ static void handle_command(char *line) {
         else if(!strcmp(line,"CAPS")) {
             reply("CAPS SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS GAIN HWAGC IQ8 SERIALLEASE"
                   " TUNEEXT"
+#if CONFIG_IDF_TARGET_ESP32C5
+                  " BIGCAP CAPT FREQK FWOPT CONT CSPEC TUNEM"
+#endif
 #if !CONFIG_IDF_TARGET_ESP32C6
                   " LPF LPF12"
 #endif
@@ -360,13 +395,25 @@ static void handle_command(char *line) {
             char answer[64];snprintf(answer,sizeof(answer),"LPF %d %u\n",rx_filter,(unsigned)((REG_READ(0x600a0430)>>18)&15));reply(answer);
         }
 #endif
+#if CONFIG_IDF_TARGET_ESP32C5
+        else if(sscanf(line,"TUNEM %u %c",&n,&extra)==1 && c5_tune_method_valid(n)) {
+            if(n==2 && c5_khz_offset){reply("ERR freqk_tunem\n");return;}
+            c5_tune_method=n;rx_ready=false;prepare_rx();reply("OK\n");
+        }
+        else if(!strcmp(line,"TUNEM?")) {
+            char answer[24];snprintf(answer,sizeof(answer),"TUNEM %u\n",c5_tune_method);reply(answer);
+        }
+#endif
         else if(!strcmp(line,"INFO")) {
             char h[64];snprintf(h,sizeof(h),BURST_ID " 6 burst %u\n",IQ_WORDS);reply(h);
         }
         else if(sscanf(line,"FREQ %u %c",&n,&extra)==1 && frequency_valid(n)) {
+#if CONFIG_IDF_TARGET_ESP32C5
+            c5_khz_offset=0;
+#endif
             frequency_mhz=n;rx_ready=false;prepare_rx();reply("OK\n");
         } else if(((!strncmp(line,"CAP ",4) && sscanf(line,"CAP %u %u %c",&n,&rate,&extra)==2) ||
                    (!strncmp(line,"CAP20 ",6) && sscanf(line,"CAP20 %u %u %c",&n,&rate,&extra)==2)) &&
-                   n>=256 && n<=IQ_WORDS && rate<=(CONFIG_IDF_TARGET_ESP32C6?0:5)) capture(n,rate,!strncmp(line,"CAP20 ",6)? (iq8?16:20):0);
+                   n>=256 && n<=CAP_MAX_WORDS && rate<=(CONFIG_IDF_TARGET_ESP32C6?0:5)) capture(n,rate,!strncmp(line,"CAP20 ",6)? (iq8?16:20):0);
         else reply("ERR command\n");
 }
